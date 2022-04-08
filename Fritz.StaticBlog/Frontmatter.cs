@@ -19,7 +19,7 @@ namespace Fritz.StaticBlog
 		{
 
 			var outText = sampleText.Clone().ToString();
-			outText = outText.Replace("{{ PublishDate }}", PublishDate.ToString());
+			outText = outText.Replace("{{ PublishDate }}", PublishDate.ToLongDateString());
 			outText = outText.Replace("{{ Title }}", Title);
 
 			return outText;

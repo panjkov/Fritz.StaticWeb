@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using CommandLine;
 using Markdig;
 using Markdig.Extensions.Yaml;
@@ -13,76 +14,78 @@ using Markdig.Syntax;
 namespace Fritz.StaticBlog
 {
 
-	[Verb("build", HelpText = "Build the website")]
-	public class ActionBuild : ActionBase, ICommandLineAction
-	{
+    [Verb("build", HelpText = "Build the website")]
+    public class ActionBuild : ActionBase, ICommandLineAction
+    {
 
-		internal List<PostData> _Posts = new();
-		internal LastBuild _LastBuild;
+        internal List<PostData> _Posts = new();
+        internal LastBuild _LastBuild;
 
-		[Option('f', "force", Default = (bool)false)]
-		public bool Force { get; set; }
+        [Option('f', "force", Default = (bool)false)]
+        public bool Force { get; set; }
 
-		[Option('o', "output", Required = true, HelpText = "Location to write out the rendered site")]
-		public string OutputPath { get; set; }
+        [Option('o', "output", Required = true, HelpText = "Location to write out the rendered site")]
+        public string OutputPath { get; set; }
 
-		[Option('m', "minify", Default = (bool)false, HelpText = "Minify the output HTML")]
-		public bool MinifyOutput { get; set; } = false;
+        [Option('m', "minify", Default = (bool)false, HelpText = "Minify the output HTML")]
+        public bool MinifyOutput { get; set; } = false;
 
-		[Option('w', "workdir", Default = ".", Required = false, HelpText = "The directory to run the build against.  Default current directory")]
-		public string ThisDirectory
-		{
-			get { return base.WorkingDirectory; }
-			set { base.WorkingDirectory = value; }
-		}
+        [Option('w', "workdir", Default = ".", Required = false, HelpText = "The directory to run the build against.  Default current directory")]
+        public string ThisDirectory
+        {
+            get { return base.WorkingDirectory; }
+            set { base.WorkingDirectory = value; }
+        }
 
-		[Option('l', "lastbuild", Default = ".lastbuild.json", Required = false, HelpText = "The file to store the last build configuration")]
-		public string LastBuildFilename { get; set; } = ".lastbuild.json";
+        [Option('l', "lastbuild", Default = ".lastbuild.json", Required = false, HelpText = "The file to store the last build configuration")]
+        public string LastBuildFilename { get; set; } = ".lastbuild.json";
 
-		public override int Execute()
-		{
+        public override int Execute()
+        {
 
-			Console.WriteLine($"Outputting to: {OutputPath}");
+            Console.WriteLine($"Outputting to: {OutputPath}");
 
-			var outValue = base.Execute();
-			if (outValue > 0) return outValue;
+            var outValue = base.Execute();
+            if (outValue > 0) return outValue;
 
-			System.Console.WriteLine($"Building in folder {WorkingDirectory} and distributing to {Path.Combine(WorkingDirectory, OutputPath)}");
+            System.Console.WriteLine($"Building in folder {WorkingDirectory} and distributing to {Path.Combine(WorkingDirectory, OutputPath)}");
 
-			BuildPosts();
+            BuildPosts();
 
-			BuildPages();
+            BuildPages();
 
-			BuildIndex();
+            BuildFullArchive();
 
-			DeployWwwRoot();
+            BuildIndex();
 
-			SaveLastBuild();
+            DeployWwwRoot();
 
-			return 0;
+            SaveLastBuild();
 
-		}
+            return 0;
 
-		public override bool Validate()
-		{
+        }
 
-			var outputDir = new DirectoryInfo(Path.Combine(WorkingDirectory, OutputPath));
-			var outValue = outputDir.Exists;
+        public override bool Validate()
+        {
 
-			if (!outValue) System.Console.WriteLine($"Output folder '{outputDir.FullName}' does not exist");
-			if (outValue)
-			{
-				outValue = new DirectoryInfo(Path.Combine(WorkingDirectory, "themes")).Exists;
-				if (!outValue) System.Console.WriteLine("themes folder is missing");
-			}
+            var outputDir = new DirectoryInfo(Path.Combine(WorkingDirectory, OutputPath));
+            var outValue = outputDir.Exists;
 
-			if (outValue)
-			{
-				outValue = new DirectoryInfo(Path.Combine(WorkingDirectory, "posts")).Exists;
-				if (!outValue) System.Console.WriteLine("posts folder is missing");
-			}
+            if (!outValue) System.Console.WriteLine($"Output folder '{outputDir.FullName}' does not exist");
+            if (outValue)
+            {
+                outValue = new DirectoryInfo(Path.Combine(WorkingDirectory, "themes")).Exists;
+                if (!outValue) System.Console.WriteLine("themes folder is missing");
+            }
 
-			/*  -- Making pages folder optional --
+            if (outValue)
+            {
+                outValue = new DirectoryInfo(Path.Combine(WorkingDirectory, "posts")).Exists;
+                if (!outValue) System.Console.WriteLine("posts folder is missing");
+            }
+
+            /*  -- Making pages folder optional --
 			if (outValue)
 			{
 					outValue = new DirectoryInfo(Path.Combine(WorkingDirectory, "pages")).Exists;
@@ -90,225 +93,319 @@ namespace Fritz.StaticBlog
 			}
 			**/
 
-			if (outValue)
-			{
-				outValue = new FileInfo(Path.Combine(WorkingDirectory, "config.json")).Exists;
-				if (!outValue) System.Console.WriteLine($"config.json file is missing");
-			}
+            if (outValue)
+            {
+                outValue = new FileInfo(Path.Combine(WorkingDirectory, "config.json")).Exists;
+                if (!outValue) System.Console.WriteLine($"config.json file is missing");
+            }
 
-			// Validate LastBuild configuration
-			if (outValue)
-			{
-				var exists = new FileInfo(Path.Combine(WorkingDirectory, LastBuildFilename)).Exists;
-				if (!exists) {
-					System.Console.WriteLine($"LastBuild file is missing - Complete build requested");
-					_LastBuild = new LastBuild { Timestamp=DateTime.MinValue };
-				} else {
-					var file = File.OpenRead(Path.Combine(WorkingDirectory, LastBuildFilename));
-					_LastBuild = JsonSerializer.DeserializeAsync<LastBuild>(file).GetAwaiter().GetResult();
-					file.Dispose(); 
-				}
-			}
+            // Validate LastBuild configuration
+            if (outValue)
+            {
+                var exists = new FileInfo(Path.Combine(WorkingDirectory, LastBuildFilename)).Exists;
+                if (!exists)
+                {
+                    System.Console.WriteLine($"LastBuild file is missing - Complete build requested");
+                    _LastBuild = new LastBuild { Timestamp = DateTime.MinValue };
+                }
+                else
+                {
+                    var file = File.OpenRead(Path.Combine(WorkingDirectory, LastBuildFilename));
+                    _LastBuild = JsonSerializer.DeserializeAsync<LastBuild>(file).GetAwaiter().GetResult();
+                    file.Dispose();
+                }
+            }
 
-			return outValue;
+            return outValue;
 
-		}
+        }
 
-		internal void BuildIndex()
-		{
+        internal void BuildIndex()
+        {
 
-			if (!Force && !_Posts.Any(p => p.LastUpdate > _LastBuild?.Timestamp)) {
-				Console.WriteLine("No new posts found.  Skipping build of index");
-				return;
-			}
+            if (!Force && !_Posts.Any(p => p.LastUpdate > _LastBuild?.Timestamp))
+            {
+                Console.WriteLine("No new posts found.  Skipping build of index");
+                return;
+            }
 
-			using var indexFile = File.CreateText(Path.Combine(WorkingDirectory, OutputPath, "index.html"));
-			using var indexLayout = File.OpenText(Path.Combine(WorkingDirectory, "themes", Config.Theme, "layouts", "index.html"));
+            using var indexFile = File.CreateText(Path.Combine(WorkingDirectory, OutputPath, "index.html"));
+            using var indexLayout = File.OpenText(Path.Combine(WorkingDirectory, "themes", Config.Theme, "layouts", "index.html"));
 
-			var outContent = indexLayout.ReadToEnd();
+            var outContent = indexLayout.ReadToEnd();
 
-			// Set the title from config
-			outContent = outContent.Replace("{{ Title }}", Config.Title);
+            // Set the title from config
+            outContent = outContent.Replace("{{ Title }}", Config.Title);
 
-			// Load the first 10 articles on the index page
-			Console.WriteLine($"Found {_Posts.Count()} posts to format");
-			var orderedPosts = _Posts.Where(p => !p.Frontmatter.Draft).OrderByDescending(p => p.Frontmatter.PublishDate);
-			var sb = new StringBuilder();
-			for (var i = 0; i < Math.Min(10, orderedPosts.Count()); i++)
-			{
+            // Load the first 10 articles on the index page
+            Console.WriteLine($"Found {_Posts.Count()} posts to format");
+            var orderedPosts = _Posts.Where(p => !p.Frontmatter.Draft).OrderByDescending(p => p.Frontmatter.PublishDate);
+            var sb = new StringBuilder();
+            for (var i = 0; i < Math.Min(10, orderedPosts.Count()); i++)
+            {
 
-				var thisPost = orderedPosts.Skip(i).First();
-				sb.AppendLine($"<h2><a href=\"{thisPost.Filename}\">{thisPost.Frontmatter.Title}</a></h2>");
+                var thisPost = orderedPosts.Skip(i).First();
+                sb.AppendLine($"<h2><a href=\"{thisPost.Filename}\">{thisPost.Frontmatter.Title}</a></h2>");
+                sb.AppendLine($"<div class=\"metadata\"><div class=\"published\">{thisPost.Frontmatter.PublishDate.ToLongDateString()}</div></div>");
+                sb.AppendLine(thisPost.Abstract);
+                sb.AppendLine($"... <a href=\"{thisPost.Filename}\">read more</a>");
 
-				sb.AppendLine(thisPost.Abstract);
+            }
 
-			}
+            outContent = outContent.Replace("{{ Body }}", sb.ToString());
+            outContent = Minify(outContent);
 
-			outContent = outContent.Replace("{{ Body }}", sb.ToString());
-			outContent = Minify(outContent);
+            indexFile.Write(outContent);
+            indexFile.Close();
 
-			indexFile.Write(outContent);
-			indexFile.Close();
+        }
 
-		}
+        internal void BuildFullArchive()
+        {
 
-		internal void BuildPages()
-		{
+            if (!Force && !_Posts.Any(p => p.LastUpdate > _LastBuild?.Timestamp))
+            {
+                Console.WriteLine("No new posts found.  Skipping build of index");
+                return;
+            }
 
-			var outValue = new DirectoryInfo(Path.Combine(WorkingDirectory, "pages")).Exists;
-			if (!outValue)
-			{
-				Console.WriteLine("Pages folder does not exist... skipping");
-				return;
-			}
+            using var archiveFile = File.CreateText(Path.Combine(WorkingDirectory, OutputPath, "archive.html"));
+            using var indexLayout = File.OpenText(Path.Combine(WorkingDirectory, "themes", Config.Theme, "layouts", "index.html"));
 
-			// TODO: Build the static pages
+            var outContent = indexLayout.ReadToEnd();
 
-		}
+            // Set the title from config
+            outContent = outContent.Replace("{{ Title }}", Config.Title);
 
-		internal void BuildPosts()
-		{
+            // Load the first 10 articles on the index page
+            Console.WriteLine($"Found {_Posts.Count()} posts to format in archive");
+            var orderedPosts = _Posts.Where(p => !p.Frontmatter.Draft).OrderByDescending(p => p.Frontmatter.PublishDate);
+            var sb = new StringBuilder();
+            for (var i = 0; i < orderedPosts.Count(); i++)
+            {
 
-			var postsFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, "posts"));
-			var outputFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, OutputPath, "posts"));
-			if (!outputFolder.Exists) outputFolder.Create();
+                var thisPost = orderedPosts.Skip(i).First();
+                sb.AppendLine($"<h2><a href=\"{thisPost.Filename}\">{thisPost.Frontmatter.Title}</a></h2>");
+                sb.AppendLine($"<div class=\"metadata\"><div class=\"published\">{thisPost.Frontmatter.PublishDate.ToLongDateString()}</div></div>");
+                sb.AppendLine(thisPost.Abstract);
+                sb.AppendLine($"... <a href=\"{thisPost.Filename}\">read more</a>");
 
-			var pipeline = new MarkdownPipelineBuilder()
-					.UseAdvancedExtensions()
-					.UseYamlFrontMatter()
-					.UsePrism()
-					.Build();
+            }
 
-			// Load layout for post
-			var layoutText = File.ReadAllText(Path.Combine(WorkingDirectory, "themes", Config.Theme, "layouts", "posts.html"));
+            outContent = outContent.Replace("{{ Body }}", sb.ToString());
+            outContent = Minify(outContent);
 
-			foreach (var post in postsFolder.GetFiles("*.md"))
-			{
+            archiveFile.Write(outContent);
+            archiveFile.Close();
 
-				var txt = File.ReadAllText(post.FullName, Encoding.UTF8);
-
-				var baseName = Path.Combine(post.Name[0..^3] + ".html");
-				var fileName = Path.Combine(outputFolder.FullName, baseName);
-
-				var doc = Markdig.Markdown.Parse(txt, pipeline);
-				var fm = txt.GetFrontMatter<Frontmatter>();
-				var mdHTML = Markdig.Markdown.ToHtml(doc, pipeline);
-
-				if (Force || post.LastWriteTimeUtc > (_LastBuild?.Timestamp ?? DateTime.MinValue)) {
-
-					string outputHTML = layoutText.Replace("{{ Body }}", mdHTML);
-					outputHTML = fm.Format(outputHTML);
-					outputHTML = Minify(outputHTML);
-
-					File.WriteAllText(fileName, outputHTML);
-
-				}
-
-				_Posts.Add(new PostData
-				{
-					Abstract = mdHTML,
-					Filename = $"posts/{baseName}",
-					Frontmatter = fm,
-					LastUpdate = post.LastWriteTimeUtc
-				});
-
-			}
+            Console.WriteLine($"Formatted {_Posts.Count()} posts in archive");
 
 
-		}
+        }
 
-		private string Minify(string html)
-		{
+        internal void BuildPages()
+        {
 
-			if (!MinifyOutput) return html;
+            var outValue = new DirectoryInfo(Path.Combine(WorkingDirectory, "pages")).Exists;
+            if (!outValue)
+            {
+                Console.WriteLine("Pages folder does not exist... skipping");
+                return;
+            }
 
-			var settings = new NUglify.Html.HtmlSettings();
-			settings.KeepTags.UnionWith(new string[] { "html", "head", "body" });
+            // TODO: Build the static pages
+var pagesFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, "pages"));
+            var outputFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, OutputPath));//, "posts"));
+            if (!outputFolder.Exists) outputFolder.Create();
 
-			var result = NUglify.Uglify.Html(html, settings);
-			if (result.HasErrors)
-			{
-				throw new Exception("NUglify has errors: " + result.Errors[0].ToString());
-			}
-			html = result.Code;
+            var pipeline = new MarkdownPipelineBuilder()
+                    .UseAdvancedExtensions()
+                    .UseYamlFrontMatter()
+                    .UsePrism()
+                    .Build();
 
-			return html;
+            // Load layout for post
+            var layoutText = File.ReadAllText(Path.Combine(WorkingDirectory, "themes", Config.Theme, "layouts", "posts.html"));
 
-		}
+            foreach (var page in pagesFolder.GetFiles("*.md"))
+            {
 
-		internal void DeployWwwRoot()
-		{
+                var txt = File.ReadAllText(page.FullName, Encoding.UTF8);
 
-			var themeFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, "themes", Config.Theme, "wwwroot"));
-			if (!Directory.Exists(Path.Combine(WorkingDirectory, "wwwroot")) && !themeFolder.Exists) return;
+                var baseName = Path.Combine(page.Name[0..^3] + ".html");
+                var fileName = Path.Combine(outputFolder.FullName, baseName);
 
-			var wwwFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, "wwwroot"));
-			var targetFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, OutputPath));
+                var doc = Markdig.Markdown.Parse(txt, pipeline);
+                var fm = txt.GetFrontMatter<Frontmatter>();
+                var mdHTML = Markdig.Markdown.ToHtml(doc, pipeline);
 
-			if (themeFolder.Exists)
-			{
+                if (Force || page.LastWriteTimeUtc > (_LastBuild?.Timestamp ?? DateTime.MinValue))
+                {
 
-				foreach (var item in themeFolder.GetDirectories())
-				{
-					CopyFolder(targetFolder, item);
-				}
+                    string outputHTML = layoutText.Replace("{{ Body }}", mdHTML);
+                    outputHTML = fm.Format(outputHTML);
+                    outputHTML = Minify(outputHTML);
 
-				foreach (var item in themeFolder.GetFiles())
-				{
-					File.Copy(item.FullName, Path.Combine(targetFolder.FullName, item.Name), true);
-				}
-			}
+                    File.WriteAllText(fileName, outputHTML);
 
-			if (wwwFolder.Exists)
-			{
+                }
 
-				foreach (var item in wwwFolder.GetDirectories())
-				{
-					CopyFolder(targetFolder, item);
-				}
+            }
 
-				foreach (var item in wwwFolder.GetFiles())
-				{
-					File.Copy(item.FullName, Path.Combine(targetFolder.FullName, item.Name), true);
-				}
+        }
 
-			}
+        internal void BuildPosts()
+        {
 
-		}
+            var postsFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, "posts"));
+            var outputFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, OutputPath));//, "posts"));
+            if (!outputFolder.Exists) outputFolder.Create();
 
-		/// <summary>
-		/// Recursive function to copy folder contents
-		/// </summary>
-		/// <param name="target"></param>
-		/// <param name="source"></param>
-		private void CopyFolder(DirectoryInfo target, DirectoryInfo source)
-		{
+            var pipeline = new MarkdownPipelineBuilder()
+                    .UseAdvancedExtensions()
+                    .UseYamlFrontMatter()
+                    .UsePrism()
+                    .Build();
 
-			if (!Directory.Exists(Path.Combine(target.FullName, source.Name)))
-			{
-				Directory.CreateDirectory(Path.Combine(target.FullName, source.Name));
-			}
+            // Load layout for post
+            var layoutText = File.ReadAllText(Path.Combine(WorkingDirectory, "themes", Config.Theme, "layouts", "posts.html"));
 
-			var targetFolder = new DirectoryInfo(Path.Combine(target.FullName, source.Name));
-			foreach (var item in source.GetDirectories())
-			{
-				CopyFolder(targetFolder, item);
-			}
+            foreach (var post in postsFolder.GetFiles("*.md"))
+            {
 
-			foreach (var item in source.GetFiles())
-			{
-				File.Copy(item.FullName, Path.Combine(targetFolder.FullName, item.Name), true);
-			}
+                var txt = File.ReadAllText(post.FullName, Encoding.UTF8);
 
-		}
+                var baseName = Path.Combine(post.Name[0..^3] + ".html");
+                var fileName = Path.Combine(outputFolder.FullName, baseName);
 
-		private void SaveLastBuild()
-		{
-			var outText = JsonSerializer.Serialize(_LastBuild);
-			File.WriteAllText(Path.Combine(WorkingDirectory, LastBuildFilename), outText);
-		}
+                var doc = Markdig.Markdown.Parse(txt, pipeline);
+                var fm = txt.GetFrontMatter<Frontmatter>();
+                var mdHTML = Markdig.Markdown.ToHtml(doc, pipeline);
+
+                if (Force || post.LastWriteTimeUtc > (_LastBuild?.Timestamp ?? DateTime.MinValue))
+                {
+
+                    string outputHTML = layoutText.Replace("{{ Body }}", mdHTML);
+                    outputHTML = fm.Format(outputHTML);
+                    outputHTML = Minify(outputHTML);
+
+                    File.WriteAllText(fileName, outputHTML);
+
+                }
+
+string postAbstract = StripHTML(mdHTML);
 
 
-	}
+                _Posts.Add(new PostData
+                {
+                    Abstract = postAbstract.Substring(0, Math.Min(postAbstract.Length, 200)),
+                    Filename = $"{baseName}",//$"posts/{baseName}",
+                    Frontmatter = fm,
+                    LastUpdate = post.LastWriteTimeUtc
+                });
+
+            }
+
+
+        }
+
+        public static string StripHTML(string input)
+        {
+            return Regex.Replace(input, "<.*?>", String.Empty);
+        }
+
+        private string Minify(string html)
+        {
+
+            if (!MinifyOutput) return html;
+
+            var settings = new NUglify.Html.HtmlSettings();
+            settings.KeepTags.UnionWith(new string[] { "html", "head", "body" });
+
+            var result = NUglify.Uglify.Html(html, settings);
+            if (result.HasErrors)
+            {
+                throw new Exception("NUglify has errors: " + result.Errors[0].ToString());
+            }
+            html = result.Code;
+
+            return html;
+
+        }
+
+        internal void DeployWwwRoot()
+        {
+
+            var themeFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, "themes", Config.Theme, "wwwroot"));
+            if (!Directory.Exists(Path.Combine(WorkingDirectory, "wwwroot")) && !themeFolder.Exists) return;
+
+            var wwwFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, "wwwroot"));
+            var targetFolder = new DirectoryInfo(Path.Combine(WorkingDirectory, OutputPath));
+
+            if (themeFolder.Exists)
+            {
+
+                foreach (var item in themeFolder.GetDirectories())
+                {
+                    CopyFolder(targetFolder, item);
+                }
+
+                foreach (var item in themeFolder.GetFiles())
+                {
+                    File.Copy(item.FullName, Path.Combine(targetFolder.FullName, item.Name), true);
+                }
+            }
+
+            if (wwwFolder.Exists)
+            {
+
+                foreach (var item in wwwFolder.GetDirectories())
+                {
+                    CopyFolder(targetFolder, item);
+                }
+
+                foreach (var item in wwwFolder.GetFiles())
+                {
+                    File.Copy(item.FullName, Path.Combine(targetFolder.FullName, item.Name), true);
+                }
+
+            }
+
+        }
+
+        /// <summary>
+        /// Recursive function to copy folder contents
+        /// </summary>
+        /// <param name="target"></param>
+        /// <param name="source"></param>
+        private void CopyFolder(DirectoryInfo target, DirectoryInfo source)
+        {
+
+            if (!Directory.Exists(Path.Combine(target.FullName, source.Name)))
+            {
+                Directory.CreateDirectory(Path.Combine(target.FullName, source.Name));
+            }
+
+            var targetFolder = new DirectoryInfo(Path.Combine(target.FullName, source.Name));
+            foreach (var item in source.GetDirectories())
+            {
+                CopyFolder(targetFolder, item);
+            }
+
+            foreach (var item in source.GetFiles())
+            {
+                File.Copy(item.FullName, Path.Combine(targetFolder.FullName, item.Name), true);
+            }
+
+        }
+
+        private void SaveLastBuild()
+        {
+            var outText = JsonSerializer.Serialize(_LastBuild);
+            File.WriteAllText(Path.Combine(WorkingDirectory, LastBuildFilename), outText);
+        }
+
+
+    }
 
 }
